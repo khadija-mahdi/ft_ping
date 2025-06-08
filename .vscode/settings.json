@@ -1,0 +1,9 @@
+{
+    "files.associations": {
+        "main.h": "c",
+        "ip_icmp.h": "c",
+        "parsing.h": "c",
+        "fcntl.h": "c",
+        "string.h": "c"
+    }
+}

@@ -24,7 +24,7 @@ $(OBJ_DIR)/%.o: %.c $(INC)
 
 $(NAME): $(OBJ)
 	@echo "$(GREEN)Compiling...$(NC)"
-	@$(CC) $(CFLAGS) -o $(NAME) $(OBJ)
+	@sudo $(CC) $(CFLAGS) -o $(NAME) $(OBJ)
 	@echo "$(GREEN)Compiled.$(NC)"
 
 clean:
