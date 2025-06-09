@@ -7,7 +7,7 @@ OBJ_DIR = objects
 OBJ = $(patsubst %.c,$(OBJ_DIR)/%.o,$(SRC))
 
 CC = gcc
-CFLAGS = -std=c99 -fsanitize=address -g
+# CFLAGS = -std=c99 -fsanitize=address -g
 
 GREEN = \033[0;32m
 RED = \033[0;31m

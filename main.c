@@ -1,99 +1,126 @@
-#define _POSIX_C_SOURCE 200112L
-#include "includes/main.h"
-#include "includes/parsing.h"
-#include <netdb.h>
+#include "ft_ping.h"
+#include <netinet/ip.h> // For struct iphdr
 
-void exitFunction(int sig, char *msg)
+void build_icmp_echo_request(struct ft_ping_pkt *pkt, int seq)
 {
-    printf("%s\n", msg);
-    exit(sig);
-}
+    memset(pkt, 0, sizeof(*pkt));
 
-void print_usage(void)
-{
-    printf("Usage: ft_ping [-v] [-?] destination\n");
-    exit(0);
-}
+    pkt->hdr.type = ICMP_ECHO;
+    pkt->hdr.code = 0;
+    pkt->hdr.un.echo.id = htons(getpid() & 0xFFFF);
+    pkt->hdr.un.echo.sequence = htons(seq);
 
-void ft_ping_help(void)
-{
-    printf("Usage\n ft_ping [options] destination\n");
-    printf("Options:\n");
-    printf("  -v        Verbose output\n");
-    printf("  -?        Show this help message\n");
-    exit(0);
-}
-
-void *getDomainIP(char *domain, paramters_t *params)
-{
-    struct addrinfo hints, *res;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET; // IPv4 only
-    int status = getaddrinfo(domain, NULL, &hints, &res);
-    if (status != 0)
+    for (int i = 0; i < sizeof(pkt->msg); i++)
     {
-        fprintf(stderr, "ft_ping: %s: %s\n", domain, gai_strerror(status));
-        exit(1);
+        pkt->msg[i] = i + 32;
     }
-    char *ip = inet_ntoa(((struct sockaddr_in *)res->ai_addr)->sin_addr);
-    if (params->verbose)
-    {
-        printf("Verbose: Domain %s resolved to IP %s\n", domain, ip);
-        printf("Verbose: hints.ai_family: %d\n", hints.ai_family);
-        printf("Verbose: ai->ai_family: %d, ai->ai_canonname: '%s'\n", res->ai_family, res->ai_canonname ? res->ai_canonname : "(null)");
-    }
-    freeaddrinfo(res);
-    return ip;
+    pkt->hdr.checksum = calculate_checksum(pkt, sizeof(*pkt));
 }
 
-void setup_ping(int argc, char **argv, paramters_t *params)
+void send_ping_request(paramters_t *params, int seq, long *send_time_ms)
 {
-    params->verbose = 0;
-    params->show_help = 0;
-    params->target = NULL;
+    struct ft_ping_pkt pkt;
+    build_icmp_echo_request(&pkt, seq);
 
-    for (int i = 1; i < argc; i++)
+    *send_time_ms = get_current_time_ms();
+
+    ssize_t bytes_sent = sendto(params->sockfd, &pkt, sizeof(pkt), 0,
+                                (struct sockaddr *)&params->addr_info,
+                                sizeof(params->addr_info));
+    if (bytes_sent < 0)
     {
-        char *arg = argv[i];
+        perror("sendto");
+        exit(EXIT_FAILURE);
+    }
+}
 
-        if (arg[0] == '-' && arg[1] != '\0')
+void receive_ping_response(paramters_t *params, int seq, long send_time_ms)
+{
+    char buffer[1024];
+    struct iphdr *ip = (struct iphdr *)buffer;
+    struct in_addr src_addr;
+    src_addr.s_addr = ip->saddr;
+    printf("Packet source IP (from IP header): %s\n", inet_ntoa(src_addr));
+
+    struct sockaddr_in reply_addr;
+    socklen_t addr_len = sizeof(reply_addr);
+    long start_time = get_current_time_ms();
+
+    while (1)
+    {
+        ssize_t bytes_received = recvfrom(params->sockfd, buffer, sizeof(buffer), 0,
+                                          (struct sockaddr *)&reply_addr, &addr_len);
+        if (bytes_received < 0)
         {
-            if (strcmp(arg, "-v") == 0)
-            {
-                params->verbose = 1;
-            }
-            else if (strcmp(arg, "-?") == 0)
-            {
-                params->show_help = 1;
-                ft_ping_help();
-            }
-            else
-            {
-                fprintf(stderr, "ft_ping: invalid option -- '%s'\n", arg);
-                ft_ping_help();
-            }
+            perror("recvfrom");
+            exit(EXIT_FAILURE);
+        }
+
+        long receive_time_ms = get_current_time_ms();
+
+        struct iphdr *ip = (struct iphdr *)buffer;
+        int ip_header_len = ip->ihl * 4;
+
+        if (bytes_received < ip_header_len + sizeof(struct icmphdr))
+        {
+            // Packet too small to contain ICMP header; ignore
+            continue;
+        }
+
+        struct icmphdr *icmp = (struct icmphdr *)(buffer + ip_header_len);
+        printf("Received ICMP packet: type=%d, id=%u, seq=%u (host order: id=%u, seq=%u)\n",
+               icmp->type,
+               ntohs(icmp->un.echo.id),
+               ntohs(icmp->un.echo.sequence),
+               ntohs(icmp->un.echo.id),
+               ntohs(icmp->un.echo.sequence));
+
+        if (icmp->type == ICMP_ECHOREPLY &&
+            ntohs(icmp->un.echo.id) == (getpid() & 0xFFFF) &&
+            ntohs(icmp->un.echo.sequence) == seq)
+        {
+            long rtt = receive_time_ms - send_time_ms;
+            printf("64 bytes from %s: icmp_seq=%d ttl=%d time=%ld ms\n",
+                   inet_ntoa(reply_addr.sin_addr),
+                   seq,
+                   ip->ttl,
+                   rtt);
+            break;
         }
         else
         {
-            params->target = arg;
-            params->domain_ip = getDomainIP(arg, params);
+            printf("Received non-echo-reply or mismatched ID/seq, ignoring...\n");
+        }
+
+        // Optional: timeout to avoid infinite blocking
+        if (receive_time_ms - start_time > 3000) // 3 seconds timeout
+        {
+            printf("Request timed out.\n");
+            break;
         }
     }
+}
 
-    if (!params->target)
-        exitFunction(1, "ft_ping: usage error: Destination address required");
-    else
+void send_ping(paramters_t *params)
+{
+    int seq = 1;
+    while (1)
     {
-        int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-        if (sockfd < 0)
-            exitFunction(1, "Error: Failed to create socket");
+        long send_time_ms;
+        send_ping_request(params, seq, &send_time_ms);
+        receive_ping_response(params, seq, send_time_ms);
+
+        seq++;
+        sleep(1);
     }
 }
+
 int main(int argc, char **argv)
 {
     paramters_t paramters;
     setup_ping(argc, argv, &paramters);
-    printf("IP address for %s: %s\n", paramters.target, paramters.domain_ip);
 
+    printf("IP address for %s: %s\n", paramters.target, paramters.domain_ip);
+    send_ping(&paramters);
     return 0;
 }
