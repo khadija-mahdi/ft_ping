@@ -16,6 +16,13 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/time.h>
+#include <netinet/ip.h> 
+#include <limits.h> 
+
+#define ICMP_PAYLOAD_SIZE 56
+#define ICMP_HEADER_SIZE 8
+#define IP_HEADER_SIZE 20
+#define TIMEOUT_MS 3000
 
 typedef struct
 {
@@ -31,7 +38,7 @@ typedef struct
 struct __attribute__((packed)) ft_ping_pkt
 {
     struct icmphdr hdr;
-    char msg[64];
+    char msg[ICMP_PAYLOAD_SIZE];
 };
 
 void setup_ping(int argc, char **argv, paramters_t *params);

@@ -20,23 +20,21 @@ char	*ft_strdup(char *s1)
 	memcpy(dst, s1, len);
 	return (dst);
 }
+unsigned short calculate_checksum(void *b, int len)
+{
+    unsigned short *buf = b;
+    unsigned int sum = 0;
+    unsigned short result;
 
-uint16_t calculate_checksum(void *b, int len) {
-    uint16_t *buf = b;
-    uint32_t sum = 0;
-
-    while (len > 1) {
+    for (sum = 0; len > 1; len -= 2)
         sum += *buf++;
-        len -= 2;
-    }
-
-    if (len == 1) {
-        sum += *(uint8_t *)buf;
-    }
+    if (len == 1)
+        sum += *(unsigned char *)buf;
 
     sum = (sum >> 16) + (sum & 0xFFFF);
     sum += (sum >> 16);
-    return ~sum;
+    result = ~sum;
+    return result;
 }
 
 

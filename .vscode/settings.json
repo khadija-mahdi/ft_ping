@@ -1,5 +1,7 @@
 {
     "files.associations": {
-        "ft_ping.h": "c"
+        "ft_ping.h": "c",
+        "netdb.h": "c",
+        "signal.h": "c"
     }
 }

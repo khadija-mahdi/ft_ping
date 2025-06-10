@@ -43,6 +43,11 @@ void getDomainIP(char *domain, paramters_t *params)
     char *ip = inet_ntoa(((struct sockaddr_in *)res->ai_addr)->sin_addr);
     free(params->domain_ip);
     params->domain_ip = ft_strdup(ip);
+
+    // Set addr_info.sin_addr to the resolved IP
+    params->addr_info.sin_family = AF_INET;
+    params->addr_info.sin_addr = ((struct sockaddr_in *)res->ai_addr)->sin_addr;
+
     if (res->ai_canonname)
         params->canonname = ft_strdup(res->ai_canonname);
     else

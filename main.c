@@ -1,5 +1,29 @@
 #include "ft_ping.h"
-#include <netinet/ip.h> // For struct iphdr
+
+volatile int packets_sent = 0;
+volatile int packets_received = 0;
+volatile long total_rtt = 0;
+volatile long min_rtt = LONG_MAX;
+volatile long max_rtt = 0;
+double start_time = 0;
+char *domain_ip = NULL;
+void handle_sigint(int sig)
+{
+    double total_time = get_current_time_ms() - start_time;
+    printf("\n--- %s ping statistics ---\n", domain_ip);
+    printf("%d packets transmitted, %d received, %.1f%% packet loss, time %.1f ms\n",
+           packets_sent, packets_received,
+           (packets_sent > 0) ? ((float)(packets_sent - packets_received) / packets_sent * 100) : 0.0f, total_time);
+
+    if (packets_received > 0)
+    {
+        printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n",
+               min_rtt / 1000.0, // Convert microseconds to milliseconds
+               (total_rtt / packets_received) / 1000.0,
+               max_rtt / 1000.0);
+    }
+    exit(0);
+}
 
 void build_icmp_echo_request(struct ft_ping_pkt *pkt, int seq)
 {
@@ -12,7 +36,7 @@ void build_icmp_echo_request(struct ft_ping_pkt *pkt, int seq)
 
     for (int i = 0; i < sizeof(pkt->msg); i++)
     {
-        pkt->msg[i] = i + 32;
+        pkt->msg[i] = i + 32; // Fill with dummy data
     }
     pkt->hdr.checksum = calculate_checksum(pkt, sizeof(*pkt));
 }
@@ -32,68 +56,80 @@ void send_ping_request(paramters_t *params, int seq, long *send_time_ms)
         perror("sendto");
         exit(EXIT_FAILURE);
     }
+
+    packets_sent++;
 }
 
-void receive_ping_response(paramters_t *params, int seq, long send_time_ms)
+void receive_ping_response(paramters_t *params, int seq, double send_time_ms)
 {
     char buffer[1024];
-    struct iphdr *ip = (struct iphdr *)buffer;
-    struct in_addr src_addr;
-    src_addr.s_addr = ip->saddr;
-    printf("Packet source IP (from IP header): %s\n", inet_ntoa(src_addr));
-
     struct sockaddr_in reply_addr;
     socklen_t addr_len = sizeof(reply_addr);
     long start_time = get_current_time_ms();
+    struct timeval timeout = {3, 0}; // 3 seconds
+
+    struct in_addr target_ip;
+    if (inet_aton(params->domain_ip, &target_ip) == 0)
+    {
+        fprintf(stderr, "Invalid target IP address: %s\n", params->domain_ip);
+        exit(EXIT_FAILURE);
+    }
 
     while (1)
     {
         ssize_t bytes_received = recvfrom(params->sockfd, buffer, sizeof(buffer), 0,
                                           (struct sockaddr *)&reply_addr, &addr_len);
+        setsockopt(params->sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
         if (bytes_received < 0)
         {
-            perror("recvfrom");
-            exit(EXIT_FAILURE);
-        }
-
-        long receive_time_ms = get_current_time_ms();
-
-        struct iphdr *ip = (struct iphdr *)buffer;
-        int ip_header_len = ip->ihl * 4;
-
-        if (bytes_received < ip_header_len + sizeof(struct icmphdr))
-        {
-            // Packet too small to contain ICMP header; ignore
+            if (params->verbose)
+                perror("recvfrom failed");
             continue;
         }
 
-        struct icmphdr *icmp = (struct icmphdr *)(buffer + ip_header_len);
-        printf("Received ICMP packet: type=%d, id=%u, seq=%u (host order: id=%u, seq=%u)\n",
-               icmp->type,
-               ntohs(icmp->un.echo.id),
-               ntohs(icmp->un.echo.sequence),
-               ntohs(icmp->un.echo.id),
-               ntohs(icmp->un.echo.sequence));
+        double receive_time_ms = get_current_time_ms();
+        struct iphdr *ip = (struct iphdr *)buffer;
+        int ip_header_len = ip->ihl * 4;
 
+        if (ip->saddr != target_ip.s_addr)
+            continue;
+
+        struct icmphdr *icmp = (struct icmphdr *)(buffer + ip_header_len);
         if (icmp->type == ICMP_ECHOREPLY &&
             ntohs(icmp->un.echo.id) == (getpid() & 0xFFFF) &&
             ntohs(icmp->un.echo.sequence) == seq)
         {
-            long rtt = receive_time_ms - send_time_ms;
-            printf("64 bytes from %s: icmp_seq=%d ttl=%d time=%ld ms\n",
+            double rtt = receive_time_ms - send_time_ms;
+
+            packets_received++;
+            total_rtt += rtt;
+            if (rtt < min_rtt)
+                min_rtt = rtt;
+            if (rtt > max_rtt)
+                max_rtt = rtt;
+            printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.1f ms\n",
+                   bytes_received - ip_header_len,
+                   inet_ntoa(reply_addr.sin_addr),
                    inet_ntoa(reply_addr.sin_addr),
                    seq,
                    ip->ttl,
                    rtt);
             break;
         }
-        else
+        else if (icmp->type == ICMP_TIME_EXCEEDED || icmp->type == ICMP_DEST_UNREACH)
         {
-            printf("Received non-echo-reply or mismatched ID/seq, ignoring...\n");
+            if (params->verbose)
+            {
+                printf("From %s icmp_seq=%d %s\n",
+                       inet_ntoa(reply_addr.sin_addr),
+                       seq,
+                       icmp->type == ICMP_TIME_EXCEEDED ? "Time to live exceeded" : "Destination Unreachable");
+            }
+            return;
         }
 
-        // Optional: timeout to avoid infinite blocking
-        if (receive_time_ms - start_time > 3000) // 3 seconds timeout
+        if (receive_time_ms - start_time > TIMEOUT_MS)
         {
             printf("Request timed out.\n");
             break;
@@ -118,9 +154,15 @@ void send_ping(paramters_t *params)
 int main(int argc, char **argv)
 {
     paramters_t paramters;
+    start_time = get_current_time_ms();
     setup_ping(argc, argv, &paramters);
-
-    printf("IP address for %s: %s\n", paramters.target, paramters.domain_ip);
+    domain_ip = paramters.target;
+    printf("PING %s (%s) %d(%d) bytes of data.\n",
+           paramters.domain_ip,
+           paramters.domain_ip,
+           ICMP_PAYLOAD_SIZE,
+           ICMP_PAYLOAD_SIZE + ICMP_HEADER_SIZE + IP_HEADER_SIZE);
+    signal(SIGINT, handle_sigint);
     send_ping(&paramters);
     return 0;
 }
