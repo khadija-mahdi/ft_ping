@@ -6,7 +6,7 @@ void ft_ping_help(void)
     printf("Usage\n ft_ping [options] destination\n");
     printf("Options:\n");
     printf("  -v        Verbose output\n");
-    printf("  -?        Show this help message\n");
+    printf("  -? and -h       Show this help message\n");
     exit(0);
 }
 
@@ -14,7 +14,7 @@ void parse_option(char *arg, paramters_t *params)
 {
     if (strcmp(arg, "-v") == 0)
         params->verbose = 1;
-    else if (strcmp(arg, "-?") == 0)
+    else if (strcmp(arg, "-?") == 0 || strcmp(arg, "-h") == 0)
     {
         params->show_help = 1;
         ft_ping_help();

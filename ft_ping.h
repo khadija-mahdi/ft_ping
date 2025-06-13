@@ -35,6 +35,16 @@ typedef struct
     struct sockaddr_in addr_info;
 } paramters_t;
 
+typedef struct s_ping_stats {
+    volatile int packets_sent;
+    volatile int packets_received;
+    volatile long total_rtt;
+    volatile long min_rtt;
+    volatile long max_rtt;
+    double start_time;
+    char *domain_ip;
+} t_ping_stats;
+
 struct __attribute__((packed)) ft_ping_pkt
 {
     struct icmphdr hdr;
